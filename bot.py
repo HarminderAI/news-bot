@@ -1,7 +1,7 @@
 import os
 import asyncio
 import datetime
-import re
+import json
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified
@@ -33,8 +33,9 @@ try:
 except:
     print("⚠️ Error: Missing Environment Variables")
 
-# --- GLOBAL MEMORY STORE ( The Fix! ) ---
-# We store the analysis here so we don't have to "read" the message later
+# --- MEMORY STORAGE (THE FIX) ---
+# We store the analysis here immediately after generation
+# This prevents the "Reading newspaper..." bug
 USER_DATA_STORE = {} 
 
 # --- GOOGLE SHEETS SETUP ---
@@ -43,7 +44,7 @@ try:
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
     client_gs = gspread.authorize(creds)
-    # Ensure this matches your Sheet Name exactly
+    # MAKE SURE THIS MATCHES YOUR SHEET NAME EXACTLY
     SHEET_CONNECTION = client_gs.open("Daily News Tracker").sheet1
     print("✅ Connected to Google Sheets!")
 except Exception as e:
@@ -63,11 +64,11 @@ async def analyze_pdf(client, message, file_path):
         
         uploaded_file = genai.upload_file(path=file_path)
         
-        # We ask for a specific separator "|||" to make splitting easy
+        # We use a specific separator ||| to help us split the text later
         prompt = """
         Analyze this newspaper for a competitive exam student.
         
-        Output Format:
+        Output Format (Strictly follow this):
         TOP 3 ARTICLES:
         1. [Headline] - [1 sentence summary]
         2. [Headline] - [1 sentence summary]
@@ -87,7 +88,7 @@ async def analyze_pdf(client, message, file_path):
         response = model.generate_content([prompt, uploaded_file])
         final_text = response.text
 
-        # --- SAVE TO MEMORY (The Fix) ---
+        # --- SAVE TO MEMORY (CRITICAL STEP) ---
         USER_DATA_STORE[chat_id] = final_text
         
         buttons = InlineKeyboardMarkup([
@@ -132,21 +133,22 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             return
 
         try:
-            # Parse the text using our separator
+            # Parse the text using our ||| separator
             if "|||" in full_text:
                 parts = full_text.split("|||")
                 summary_part = parts[0].replace("TOP 3 ARTICLES:", "").strip()
                 vocab_part = parts[1].replace("VOCABULARY:", "").strip()
             else:
-                summary_part = full_text[:500]
+                summary_part = full_text[:1000]
                 vocab_part = "See summary"
 
             today_date = datetime.date.today().strftime("%Y-%m-%d")
             
-            # Save nicely to columns: [Date, Headline column, Summary column, Vocab column]
-            # We put the 'Summary Part' in Column B and 'Vocab Part' in Column D (Vocab Word)
-            # You can adjust this to fit your exact column layout
-            SHEET_CONNECTION.append_row([today_date, summary_part, "", vocab_part])
+            # Save nicely to columns
+            # Column A: Date
+            # Column B: Summary List
+            # Column C: Vocab List
+            SHEET_CONNECTION.append_row([today_date, summary_part, vocab_part])
             
             await callback_query.answer("✅ Saved successfully!", show_alert=True)
             
