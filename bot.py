@@ -75,7 +75,6 @@ MAX_FEATURE_USES = 3
 
 USER_LAST_CALL = {}
 USER_DATA_STORE = {}
-PENDING_GEMINI_FILES = set()
 
 def sanitize_sheet_input(text):
     if not text: return ""
@@ -132,13 +131,12 @@ except Exception as e:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Startup Cleanup (Threaded to prevent boot blocking)
+# Startup Cleanup
 def startup_gemini_cleanup():
     def _cleanup():
         print("🧹 Cleaning up orphaned bot files...")
         try:
             for f in genai.list_files():
-                # Only delete files created by THIS bot
                 if f.display_name and f.display_name.startswith("tg_bot_"):
                     try: f.delete()
                     except: pass
@@ -146,7 +144,6 @@ def startup_gemini_cleanup():
         except Exception as e:
             print(f"⚠️ Cleanup Warning: {e}")
     
-    # Run in background thread
     Thread(target=_cleanup, daemon=True).start()
 
 app_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -261,7 +258,6 @@ async def start_analysis(client, chat_id, exam_type, message_to_edit):
 
         file_id = user_data['file_id']
         timestamp = int(time.time())
-        # UUID prevents collision if multiple uploads happen in same second
         file_path = f"downloads/{chat_id}_{timestamp}_{uuid.uuid4().hex[:6]}.pdf"
         display_name = f"tg_bot_{chat_id}_{timestamp}_{uuid.uuid4().hex[:6]}"
         
@@ -277,7 +273,6 @@ async def start_analysis(client, chat_id, exam_type, message_to_edit):
             file_path, 
             display_name=display_name
         )
-        PENDING_GEMINI_FILES.add(uploaded_file.name)
         
         full_prompt = f"{SYSTEM_GUARD}\n{EXAM_PROMPTS.get(exam_type, '')}\n{COMMON_INSTRUCTIONS}"
         
@@ -328,7 +323,6 @@ async def start_analysis(client, chat_id, exam_type, message_to_edit):
         if uploaded_file:
             try: 
                 await run_blocking_task(GEMINI_EXECUTOR, uploaded_file.delete)
-                PENDING_GEMINI_FILES.discard(uploaded_file.name)
             except: pass
 
 # --- 7. FEATURE FUNCTIONS ---
@@ -372,7 +366,6 @@ async def generate_quiz(client, chat_id, message_to_edit):
             timeout=GEMINI_TIMEOUT
         )
         
-        # Increment ONLY after success
         increment_usage(chat_id, 'quiz')
         
         await message_to_edit.reply_text(f"📝 **QUIZ**\n\n{response.text}", parse_mode=ParseMode.MARKDOWN)
@@ -464,12 +457,14 @@ async def handle_document(client, message):
             return await message.reply_text("⏳ Please wait 30 seconds.")
 
         chat_id = message.chat.id
+        # Explicit initialization of all fields
         USER_DATA_STORE[chat_id] = {
             'file_id': message.document.file_id,
             'timestamp': time.time(),
             'locks': {},
             'usage': {},
-            'last_cb': None
+            'last_cb': None,
+            'saved': False 
         }
         
         buttons = InlineKeyboardMarkup([
@@ -551,3 +546,24 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             USER_DATA_STORE[chat_id]['saved'] = True
             await callback_query.answer("✅ Saved!", show_alert=True)
             
+            new_buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Saved!", callback_data="ignore"), InlineKeyboardButton("📝 Quiz", callback_data="quiz")],
+                [InlineKeyboardButton("🔊 Listen", callback_data="audio"), InlineKeyboardButton("🇮🇳 Hindi", callback_data="translate")],
+                [InlineKeyboardButton("❌ Close", callback_data="close")]
+            ])
+            await safe_edit(callback_query.message, reply_markup=new_buttons)
+
+        except Exception as e:
+            await callback_query.answer(f"Error saving: {e}", show_alert=True)
+    
+    elif data == "ignore": 
+        await callback_query.answer("Already saved! 💾")
+
+if __name__ == '__main__':
+    keep_alive()
+    startup_gemini_cleanup()
+    print("Super Bot (ULTIMATE EDITION) is running...")
+    try:
+        app_bot.run()
+    except Exception as e:
+        print(f"🔥 Fatal Bot Crash: {e}")
