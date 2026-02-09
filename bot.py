@@ -43,7 +43,7 @@ async def analyze_pdf(client, message, file_path):
         2. 5 Vocab words (Word: Meaning - Context).
         Format clearly with emojis.
         """
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content([prompt, uploaded_file])
         
         # Create Buttons
