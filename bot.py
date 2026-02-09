@@ -1,7 +1,7 @@
 import os
 import asyncio
 import datetime
-import json
+import re
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified
@@ -18,7 +18,7 @@ def home(): return "I am alive!"
 def run_http(): app.run(host='0.0.0.0', port=8080)
 def keep_alive(): t = Thread(target=run_http); t.start()
 
-# --- MAGIC SETUP: CREATE CREDENTIALS FILE ---
+# --- MAGIC SETUP ---
 google_creds_env = os.getenv("GOOGLE_CREDENTIALS")
 if google_creds_env:
     with open("credentials.json", "w") as f:
@@ -33,9 +33,8 @@ try:
 except:
     print("⚠️ Error: Missing Environment Variables")
 
-# --- MEMORY STORAGE (THE FIX) ---
-# We store the analysis here immediately after generation
-# This prevents the "Reading newspaper..." bug
+# --- MEMORY STORE ---
+# Structure: { chat_id: { 'file_id': '...', 'analysis': '...', 'exam': '...' } }
 USER_DATA_STORE = {} 
 
 # --- GOOGLE SHEETS SETUP ---
@@ -44,7 +43,6 @@ try:
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
     client_gs = gspread.authorize(creds)
-    # MAKE SURE THIS MATCHES YOUR SHEET NAME EXACTLY
     SHEET_CONNECTION = client_gs.open("Daily News Tracker").sheet1
     print("✅ Connected to Google Sheets!")
 except Exception as e:
@@ -53,102 +51,160 @@ except Exception as e:
 genai.configure(api_key=GEMINI_API_KEY)
 app_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- ANALYSIS LOGIC ---
-async def analyze_pdf(client, message, file_path):
-    chat_id = message.chat.id
+# --- PROMPTS ---
+EXAM_PROMPTS = {
+    "banking": """
+    Analyze this newspaper specifically for **Banking Exams (IBPS/SBI/RBI)**.
+    Focus ONLY on: Economy, Finance, RBI Circulars, MoUs, Summits, Appointments, Mergers, and Banking Terminology.
+    Ignore: Political drama, local crimes, entertainment.
+    """,
+    "ssc": """
+    Analyze this newspaper specifically for **SSC CGL/CHSL Exams**.
+    Focus ONLY on: Factual Current Affairs, Awards, Honours, Sports, Books & Authors, Science & Tech, and Places in News.
+    Ignore: Deep editorial opinions, complex policy analysis.
+    """,
+    "upsc": """
+    Analyze this newspaper specifically for **UPSC Civil Services**.
+    Focus ONLY on: Govt Schemes, International Relations, Constitution/Polity, Environment, Science, and Social Issues.
+    Provide a gist of the Editorial opinions.
+    """,
+    "cat": """
+    Analyze this newspaper specifically for **CAT/MBA Exams**.
+    Focus on: The Editorial Section.
+    1. Summarize the main argument of the top editorial.
+    2. Identify the Author's Tone (e.g., Critical, Sarcastic, Optimistic).
+    3. List sophisticated vocabulary words used in the passage.
+    """,
+    "regulatory": """
+    Analyze this newspaper specifically for **Regulatory Bodies (RBI Grade B / SEBI / NABARD)**.
+    Focus ONLY on: ESI (Economic & Social Issues), Finance news, Agriculture (for NABARD), and Government Reports/Indices.
+    """
+}
+
+COMMON_INSTRUCTIONS = """
+    Output Format (Strictly follow this):
+    TOP 3 UPDATES:
+    1. [Headline] - [Summary suitable for this exam]
+    2. [Headline] - [Summary suitable for this exam]
+    3. [Headline] - [Summary suitable for this exam]
+    
+    |||
+    
+    VOCABULARY:
+    1. [Word]: [Definition] ([Context])
+    2. [Word]: [Definition] ([Context])
+    3. [Word]: [Definition] ([Context])
+    4. [Word]: [Definition] ([Context])
+    5. [Word]: [Definition] ([Context])
+"""
+
+# --- CORE LOGIC ---
+async def start_analysis(client, chat_id, exam_type, message_to_edit):
     try:
-        msg = await message.reply_text("📥 Downloading big file...")
-        await client.download_media(message.document, file_name=file_path)
+        # 1. Retrieve file_id from memory
+        user_data = USER_DATA_STORE.get(chat_id)
+        if not user_data or 'file_id' not in user_data:
+            await message_to_edit.edit_text("⚠️ Error: File not found. Please upload again.")
+            return
+
+        file_id = user_data['file_id']
+        file_path = f"downloads/{file_id}.pdf"
         
-        await msg.edit_text("🤖 Reading newspaper with Gemini...")
+        await message_to_edit.edit_text(f"📥 Downloading & Analyzing for **{exam_type.upper()}**... ⏳")
         
+        # 2. Download File
+        # We need to fetch the file object using the file_id
+        await client.download_media(file_id, file_name=file_path)
+        
+        # 3. Analyze
         uploaded_file = genai.upload_file(path=file_path)
         
-        # We use a specific separator ||| to help us split the text later
-        prompt = """
-        Analyze this newspaper for a competitive exam student.
-        
-        Output Format (Strictly follow this):
-        TOP 3 ARTICLES:
-        1. [Headline] - [1 sentence summary]
-        2. [Headline] - [1 sentence summary]
-        3. [Headline] - [1 sentence summary]
-        
-        |||
-        
-        VOCABULARY:
-        1. [Word]: [Definition] ([Context])
-        2. [Word]: [Definition] ([Context])
-        3. [Word]: [Definition] ([Context])
-        4. [Word]: [Definition] ([Context])
-        5. [Word]: [Definition] ([Context])
-        """
+        # Combine specific exam instructions with the formatting rules
+        full_prompt = EXAM_PROMPTS[exam_type] + COMMON_INSTRUCTIONS
         
         model = genai.GenerativeModel('gemini-flash-latest')
-        response = model.generate_content([prompt, uploaded_file])
+        response = model.generate_content([full_prompt, uploaded_file])
         final_text = response.text
-
-        # --- SAVE TO MEMORY (CRITICAL STEP) ---
-        USER_DATA_STORE[chat_id] = final_text
         
+        # 4. Save to Memory
+        USER_DATA_STORE[chat_id]['analysis'] = final_text
+        USER_DATA_STORE[chat_id]['exam'] = exam_type
+        
+        # 5. Show Result
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💾 Save to Google Sheet", callback_data="save"), 
+            [InlineKeyboardButton("💾 Save to Sheet", callback_data="save"), 
              InlineKeyboardButton("❌ Close", callback_data="close")]
         ])
-        
-        await msg.edit_text(final_text, reply_markup=buttons)
+        await message_to_edit.edit_text(final_text, reply_markup=buttons)
 
     except Exception as e:
-        await message.reply_text(f"Error: {e}")
-    
+        await message_to_edit.edit_text(f"Error: {e}")
     finally:
         if os.path.exists(file_path): os.remove(file_path)
+
 
 # --- HANDLERS ---
 @app_bot.on_message(filters.document)
 async def handle_document(client, message):
     if message.document.mime_type == "application/pdf":
-        file_path = f"downloads/{message.document.file_id}.pdf"
-        await analyze_pdf(client, message, file_path)
+        chat_id = message.chat.id
+        
+        # 1. Save file_id to memory (Don't download yet)
+        USER_DATA_STORE[chat_id] = {'file_id': message.document.file_id}
+        
+        # 2. Ask for Exam Preference
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏦 Banking", callback_data="exam_banking"), InlineKeyboardButton("🏛️ UPSC", callback_data="exam_upsc")],
+            [InlineKeyboardButton("🚆 SSC", callback_data="exam_ssc"), InlineKeyboardButton("📈 Regulatory", callback_data="exam_regulatory")],
+            [InlineKeyboardButton("🎓 CAT/MBA", callback_data="exam_cat")]
+        ])
+        
+        await message.reply_text("Which exam are you preparing for?", reply_markup=buttons)
     else:
         await message.reply_text("Please send a PDF file.")
+
 
 @app_bot.on_callback_query()
 async def handle_callbacks(client, callback_query: CallbackQuery):
     chat_id = callback_query.message.chat.id
+    data = callback_query.data
     
-    if callback_query.data == "close":
+    # --- EXAM SELECTION ---
+    if data.startswith("exam_"):
+        exam_type = data.split("_")[1] # e.g., "banking"
+        await start_analysis(client, chat_id, exam_type, callback_query.message)
+    
+    # --- CLOSE ---
+    elif data == "close":
         await callback_query.message.delete()
         
-    elif callback_query.data == "save":
+    # --- SAVE TO SHEET ---
+    elif data == "save":
         if not SHEET_CONNECTION:
             await callback_query.answer("❌ Error: Sheets not connected.", show_alert=True)
             return
 
-        # RETRIEVE FROM MEMORY (Instead of reading the message)
-        full_text = USER_DATA_STORE.get(chat_id)
+        user_data = USER_DATA_STORE.get(chat_id)
+        full_text = user_data.get('analysis') if user_data else None
         
         if not full_text:
-            await callback_query.answer("⚠️ Session expired. Please upload PDF again.", show_alert=True)
+            await callback_query.answer("⚠️ Session expired.", show_alert=True)
             return
 
         try:
-            # Parse the text using our ||| separator
             if "|||" in full_text:
                 parts = full_text.split("|||")
-                summary_part = parts[0].replace("TOP 3 ARTICLES:", "").strip()
+                summary_part = parts[0].replace("TOP 3 UPDATES:", "").strip()
                 vocab_part = parts[1].replace("VOCABULARY:", "").strip()
             else:
                 summary_part = full_text[:1000]
                 vocab_part = "See summary"
 
             today_date = datetime.date.today().strftime("%Y-%m-%d")
+            exam_tag = user_data.get('exam', 'General').upper()
             
-            # Save nicely to columns
-            # Column A: Date
-            # Column B: Summary List
-            # Column C: Vocab List
-            SHEET_CONNECTION.append_row([today_date, summary_part, vocab_part])
+            # FORMAT: [Date, Exam Category, Summary, Vocab]
+            SHEET_CONNECTION.append_row([today_date, exam_tag, summary_part, vocab_part])
             
             await callback_query.answer("✅ Saved successfully!", show_alert=True)
             
@@ -163,10 +219,10 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         except Exception as e:
             await callback_query.answer(f"Error saving: {e}", show_alert=True)
     
-    elif callback_query.data == "ignore":
+    elif data == "ignore":
         await callback_query.answer("Already saved! 💾")
 
 if __name__ == '__main__':
     keep_alive()
-    print("Super Bot (Memory Version) is running...")
+    print("Super Bot (Exam Edition) is running...")
     app_bot.run()
