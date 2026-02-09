@@ -4,3 +4,4 @@ google-generativeai
 flask
 gspread
 oauth2client
+gTTS
