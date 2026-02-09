@@ -7,6 +7,7 @@ import re
 import uuid
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial  # <--- NEW IMPORT FOR FIX
 
 # Pyrogram
 from pyrogram import Client, filters
@@ -67,7 +68,7 @@ except Exception as e:
 
 # --- 2. SECURITY, RATE LIMITING & MEMORY ---
 
-MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_FILE_SIZE = 50 * 1024 * 1024  # Increased to 50MB
 RATE_LIMIT_SECONDS = 30
 SESSION_TTL = 3600
 GEMINI_TIMEOUT = 60
@@ -97,7 +98,6 @@ def cleanup_sessions():
     if random.random() > 0.05: return 
     
     now = time.time()
-    # Use list() to avoid runtime error if dict changes size during iteration
     for uid in list(USER_DATA_STORE.keys()):
         try:
             data = USER_DATA_STORE.get(uid)
@@ -212,9 +212,10 @@ COMMON_INSTRUCTIONS = """
 
 # --- 5. HELPER FUNCTIONS ---
 
-async def run_blocking_task(executor, func, *args):
+# FIX: Added **kwargs and functools.partial to handle keyword arguments
+async def run_blocking_task(executor, func, *args, **kwargs):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(executor, func, *args)
+    return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
 
 def smart_split(text, limit=4000):
     if len(text) <= limit: return [text]
@@ -258,6 +259,7 @@ async def start_analysis(client, chat_id, exam_type, message_to_edit):
 
         file_id = user_data['file_id']
         timestamp = int(time.time())
+        # UUID prevents collision if multiple uploads happen in same second
         file_path = f"downloads/{chat_id}_{timestamp}_{uuid.uuid4().hex[:6]}.pdf"
         display_name = f"tg_bot_{chat_id}_{timestamp}_{uuid.uuid4().hex[:6]}"
         
@@ -451,7 +453,7 @@ async def handle_document(client, message):
              return await message.reply_text("❌ Only PDF files allowed.")
 
         if message.document.file_size > MAX_FILE_SIZE:
-            return await message.reply_text("❌ File too large. Max size is 20MB.")
+            return await message.reply_text("❌ File too large. Max size is 50MB.")
             
         if check_rate_limit(message.from_user.id, message.chat.id):
             return await message.reply_text("⏳ Please wait 30 seconds.")
