@@ -1,9 +1,10 @@
 import os
 import asyncio
 import datetime
-import json
+import re
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import MessageNotModified
 import google.generativeai as genai
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -17,8 +18,7 @@ def home(): return "I am alive!"
 def run_http(): app.run(host='0.0.0.0', port=8080)
 def keep_alive(): t = Thread(target=run_http); t.start()
 
-# --- MAGIC SETUP: CREATE CREDENTIALS FILE FROM ENV VAR ---
-# This allows you to use Render Environment Variables instead of uploading the file
+# --- MAGIC SETUP: CREATE CREDENTIALS FILE ---
 google_creds_env = os.getenv("GOOGLE_CREDENTIALS")
 if google_creds_env:
     with open("credentials.json", "w") as f:
@@ -31,7 +31,11 @@ try:
     BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 except:
-    print("⚠️ Error: Missing Environment Variables in Render")
+    print("⚠️ Error: Missing Environment Variables")
+
+# --- GLOBAL MEMORY STORE ( The Fix! ) ---
+# We store the analysis here so we don't have to "read" the message later
+USER_DATA_STORE = {} 
 
 # --- GOOGLE SHEETS SETUP ---
 SHEET_CONNECTION = None
@@ -39,7 +43,7 @@ try:
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
     client_gs = gspread.authorize(creds)
-    # CHANGE 'Daily News Tracker' TO YOUR EXACT SHEET NAME
+    # Ensure this matches your Sheet Name exactly
     SHEET_CONNECTION = client_gs.open("Daily News Tracker").sheet1
     print("✅ Connected to Google Sheets!")
 except Exception as e:
@@ -50,6 +54,7 @@ app_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 
 # --- ANALYSIS LOGIC ---
 async def analyze_pdf(client, message, file_path):
+    chat_id = message.chat.id
     try:
         msg = await message.reply_text("📥 Downloading big file...")
         await client.download_media(message.document, file_name=file_path)
@@ -58,10 +63,11 @@ async def analyze_pdf(client, message, file_path):
         
         uploaded_file = genai.upload_file(path=file_path)
         
+        # We ask for a specific separator "|||" to make splitting easy
         prompt = """
         Analyze this newspaper for a competitive exam student.
         
-        Output Format (Strictly follow this):
+        Output Format:
         TOP 3 ARTICLES:
         1. [Headline] - [1 sentence summary]
         2. [Headline] - [1 sentence summary]
@@ -79,13 +85,17 @@ async def analyze_pdf(client, message, file_path):
         
         model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content([prompt, uploaded_file])
+        final_text = response.text
+
+        # --- SAVE TO MEMORY (The Fix) ---
+        USER_DATA_STORE[chat_id] = final_text
         
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("💾 Save to Google Sheet", callback_data="save"), 
              InlineKeyboardButton("❌ Close", callback_data="close")]
         ])
         
-        await msg.edit_text(response.text, reply_markup=buttons)
+        await msg.edit_text(final_text, reply_markup=buttons)
 
     except Exception as e:
         await message.reply_text(f"Error: {e}")
@@ -104,6 +114,8 @@ async def handle_document(client, message):
 
 @app_bot.on_callback_query()
 async def handle_callbacks(client, callback_query: CallbackQuery):
+    chat_id = callback_query.message.chat.id
+    
     if callback_query.data == "close":
         await callback_query.message.delete()
         
@@ -112,9 +124,15 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             await callback_query.answer("❌ Error: Sheets not connected.", show_alert=True)
             return
 
+        # RETRIEVE FROM MEMORY (Instead of reading the message)
+        full_text = USER_DATA_STORE.get(chat_id)
+        
+        if not full_text:
+            await callback_query.answer("⚠️ Session expired. Please upload PDF again.", show_alert=True)
+            return
+
         try:
-            full_text = callback_query.message.text.markdown
-            
+            # Parse the text using our separator
             if "|||" in full_text:
                 parts = full_text.split("|||")
                 summary_part = parts[0].replace("TOP 3 ARTICLES:", "").strip()
@@ -124,7 +142,11 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                 vocab_part = "See summary"
 
             today_date = datetime.date.today().strftime("%Y-%m-%d")
-            SHEET_CONNECTION.append_row([today_date, summary_part, vocab_part])
+            
+            # Save nicely to columns: [Date, Headline column, Summary column, Vocab column]
+            # We put the 'Summary Part' in Column B and 'Vocab Part' in Column D (Vocab Word)
+            # You can adjust this to fit your exact column layout
+            SHEET_CONNECTION.append_row([today_date, summary_part, "", vocab_part])
             
             await callback_query.answer("✅ Saved successfully!", show_alert=True)
             
@@ -134,16 +156,15 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             ])
             await callback_query.edit_message_reply_markup(reply_markup=new_buttons)
             
+        except MessageNotModified:
+            pass
         except Exception as e:
-            if "MESSAGE_NOT_MODIFIED" in str(e):
-                pass
-            else:
-                await callback_query.answer(f"Error saving: {e}", show_alert=True)
+            await callback_query.answer(f"Error saving: {e}", show_alert=True)
     
     elif callback_query.data == "ignore":
         await callback_query.answer("Already saved! 💾")
 
 if __name__ == '__main__':
     keep_alive()
-    print("Super Bot is running...")
+    print("Super Bot (Memory Version) is running...")
     app_bot.run()
