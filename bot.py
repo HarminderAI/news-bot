@@ -116,7 +116,7 @@ async def start_analysis(client, chat_id, exam_type, message_to_edit):
         full_prompt = EXAM_PROMPTS.get(exam_type, "") + COMMON_INSTRUCTIONS
         
         # [FIX]: Use stable model
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content([full_prompt, uploaded_file])
         final_text = response.text
         
