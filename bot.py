@@ -71,12 +71,54 @@ async def handle_document(client, message):
         await message.reply_text("Please send a PDF file.")
 
 @app_bot.on_callback_query()
-async def handle_callbacks(client, callback_query):
+async def handle_callbacks(client, callback_query: CallbackQuery):
     if callback_query.data == "close":
         await callback_query.message.delete()
+        
     elif callback_query.data == "save":
-        await callback_query.answer("Feature coming in next update!", show_alert=True)
+        if not SHEET_CONNECTION:
+            await callback_query.answer("❌ Error: credentials.json not found.", show_alert=True)
+            return
 
+        try:
+            # 1. Get the text
+            full_text = callback_query.message.text.markdown # Get markdown to preserve formatting
+            
+            # 2. Parse Data (Using our specific separator)
+            if "|||" in full_text:
+                parts = full_text.split("|||")
+                summary_part = parts[0].replace("TOP 3 ARTICLES:", "").strip()
+                vocab_part = parts[1].replace("VOCABULARY:", "").strip()
+            else:
+                summary_part = full_text[:500]
+                vocab_part = "See summary"
+
+            # 3. Save to Sheet
+            today_date = datetime.date.today().strftime("%Y-%m-%d")
+            SHEET_CONNECTION.append_row([today_date, summary_part, vocab_part])
+            
+            # 4. Show Success Alert
+            await callback_query.answer("✅ Saved successfully!", show_alert=True)
+            
+            # 5. Update Message (With Error Handling)
+            # We change the button text to "✅ Saved" so the message content is DIFFERENT.
+            # This prevents the "Message Not Modified" error.
+            new_buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Saved!", callback_data="ignore"), 
+                 InlineKeyboardButton("❌ Close", callback_data="close")]
+            ])
+            
+            await callback_query.edit_message_reply_markup(reply_markup=new_buttons)
+            
+        except Exception as e:
+            # If it's the "Not Modified" error, we just ignore it
+            if "MESSAGE_NOT_MODIFIED" in str(e):
+                pass 
+            else:
+                await callback_query.answer(f"Error saving: {e}", show_alert=True)
+    
+    elif callback_query.data == "ignore":
+        await callback_query.answer("Already saved! 💾")
 if __name__ == '__main__':
     keep_alive()
     print("Super Bot is running...")
