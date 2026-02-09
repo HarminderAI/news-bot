@@ -1,8 +1,11 @@
 import os
 import asyncio
+import datetime
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery # <--- Fixed Import
 import google.generativeai as genai
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask
 from threading import Thread
 
@@ -14,21 +17,34 @@ def run_http(): app.run(host='0.0.0.0', port=8080)
 def keep_alive(): t = Thread(target=run_http); t.start()
 
 # --- CONFIG ---
-# Get these from your Render Environment Variables
-API_ID = int(os.getenv("API_ID"))       # <--- NEW
-API_HASH = os.getenv("API_HASH")        # <--- NEW
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN") # Same as before
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Ensure these match your Render Environment Variables exactly
+try:
+    API_ID = int(os.getenv("API_ID"))
+    API_HASH = os.getenv("API_HASH")
+    BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+except:
+    print("⚠️ Error: Missing Environment Variables in Render")
+
+# --- GOOGLE SHEETS SETUP ---
+SHEET_CONNECTION = None
+try:
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
+    client_gs = gspread.authorize(creds)
+    # CHANGE 'Daily News Tracker' TO YOUR EXACT SHEET NAME IF DIFFERENT
+    SHEET_CONNECTION = client_gs.open("Daily News Tracker").sheet1
+    print("✅ Connected to Google Sheets!")
+except Exception as e:
+    print(f"⚠️ Google Sheets Error: {e}")
 
 genai.configure(api_key=GEMINI_API_KEY)
-
-# Initialize the Super Bot
 app_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- ANALYSIS LOGIC ---
 async def analyze_pdf(client, message, file_path):
     try:
-        msg = await message.reply_text("📥 Downloading big file... (This may take a minute)")
+        msg = await message.reply_text("📥 Downloading big file... (This relies on your internet speed)")
         
         # Pyrogram handles the download of large files automatically
         await client.download_media(message.document, file_name=file_path)
@@ -37,19 +53,34 @@ async def analyze_pdf(client, message, file_path):
         
         # Analyze with Gemini
         uploaded_file = genai.upload_file(path=file_path)
+        
         prompt = """
-        Analyze this newspaper.
-        1. Top 3 Articles (Headline + 1 sentence summary).
-        2. 5 Vocab words (Word: Meaning - Context).
-        Format clearly with emojis.
+        Analyze this newspaper for a competitive exam student.
+        
+        Output Format (Strictly follow this):
+        TOP 3 ARTICLES:
+        1. [Headline] - [1 sentence summary]
+        2. [Headline] - [1 sentence summary]
+        3. [Headline] - [1 sentence summary]
+        
+        |||
+        
+        VOCABULARY:
+        1. [Word]: [Definition] ([Context])
+        2. [Word]: [Definition] ([Context])
+        3. [Word]: [Definition] ([Context])
+        4. [Word]: [Definition] ([Context])
+        5. [Word]: [Definition] ([Context])
         """
+        
+        # Using the stable model version
         model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content([prompt, uploaded_file])
         
-        # Create Buttons
+        # Create Save Button
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💾 Save Data", callback_data="save"), 
-             InlineKeyboardButton("🗑️ Close", callback_data="close")]
+            [InlineKeyboardButton("💾 Save to Google Sheet", callback_data="save"), 
+             InlineKeyboardButton("❌ Close", callback_data="close")]
         ])
         
         await msg.edit_text(response.text, reply_markup=buttons)
@@ -82,9 +113,9 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
 
         try:
             # 1. Get the text
-            full_text = callback_query.message.text.markdown # Get markdown to preserve formatting
+            full_text = callback_query.message.text.markdown
             
-            # 2. Parse Data (Using our specific separator)
+            # 2. Parse Data
             if "|||" in full_text:
                 parts = full_text.split("|||")
                 summary_part = parts[0].replace("TOP 3 ARTICLES:", "").strip()
@@ -100,26 +131,23 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             # 4. Show Success Alert
             await callback_query.answer("✅ Saved successfully!", show_alert=True)
             
-            # 5. Update Message (With Error Handling)
-            # We change the button text to "✅ Saved" so the message content is DIFFERENT.
-            # This prevents the "Message Not Modified" error.
+            # 5. Update Message Button
             new_buttons = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Saved!", callback_data="ignore"), 
                  InlineKeyboardButton("❌ Close", callback_data="close")]
             ])
-            
             await callback_query.edit_message_reply_markup(reply_markup=new_buttons)
             
         except Exception as e:
-            # If it's the "Not Modified" error, we just ignore it
             if "MESSAGE_NOT_MODIFIED" in str(e):
-                pass 
+                pass
             else:
                 await callback_query.answer(f"Error saving: {e}", show_alert=True)
     
     elif callback_query.data == "ignore":
         await callback_query.answer("Already saved! 💾")
+
 if __name__ == '__main__':
     keep_alive()
-    print("Super Bot is running...")
+    print("Super Bot with Sheets is running...")
     app_bot.run()
