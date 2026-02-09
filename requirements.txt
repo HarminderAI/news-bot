@@ -1,3 +1,6 @@
-python-telegram-bot
+pyrogram
+tgcrypto
 google-generativeai
 flask
+gspread
+oauth2client
