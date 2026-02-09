@@ -1,72 +1,83 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import google.generativeai as genai
 from flask import Flask
 from threading import Thread
 
-# --- FLASK KEEP-ALIVE SERVER ---
+# --- FLASK KEEP-ALIVE ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "I am alive!"
+def home(): return "I am alive!"
+def run_http(): app.run(host='0.0.0.0', port=8080)
+def keep_alive(): t = Thread(target=run_http); t.start()
 
-def run_http():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_http)
-    t.start()
-
-# --- BOT CONFIG ---
-# WE USE os.getenv SO WE DON'T LEAK SECRETS ON GITHUB
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# --- CONFIG ---
+# Get these from your Render Environment Variables
+API_ID = int(os.getenv("API_ID"))       # <--- NEW
+API_HASH = os.getenv("API_HASH")        # <--- NEW
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN") # Same as before
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Initialize the Super Bot
+app_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Received! Processing PDF for {user_name}... ⏳")
-
-    file_id = update.message.document.file_id
-    new_file = await context.bot.get_file(file_id)
-    file_path = "daily_paper.pdf"
-    await new_file.download_to_drive(file_path)
-
+# --- ANALYSIS LOGIC ---
+async def analyze_pdf(client, message, file_path):
     try:
+        msg = await message.reply_text("📥 Downloading big file... (This may take a minute)")
+        
+        # Pyrogram handles the download of large files automatically
+        await client.download_media(message.document, file_name=file_path)
+        
+        await msg.edit_text("🤖 Reading newspaper with Gemini...")
+        
+        # Analyze with Gemini
         uploaded_file = genai.upload_file(path=file_path)
         prompt = """
-        Analyze this newspaper for a student. 
-        1. List top 3 articles with 1-sentence summaries.
-        2. 'Rule of 5' Vocabulary: 5 hard words with definitions and context sentences.
-        Output as clean text with emojis.
+        Analyze this newspaper.
+        1. Top 3 Articles (Headline + 1 sentence summary).
+        2. 5 Vocab words (Word: Meaning - Context).
+        Format clearly with emojis.
         """
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content([prompt, uploaded_file])
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=response.text)
+        
+        # Create Buttons
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💾 Save Data", callback_data="save"), 
+             InlineKeyboardButton("🗑️ Close", callback_data="close")]
+        ])
+        
+        await msg.edit_text(response.text, reply_markup=buttons)
 
     except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error: {e}")
+        await message.reply_text(f"Error: {e}")
     
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if os.path.exists(file_path): os.remove(file_path)
+
+# --- HANDLERS ---
+@app_bot.on_message(filters.document)
+async def handle_document(client, message):
+    # Check if it is a PDF
+    if message.document.mime_type == "application/pdf":
+        file_path = f"downloads/{message.document.file_id}.pdf"
+        await analyze_pdf(client, message, file_path)
+    else:
+        await message.reply_text("Please send a PDF file.")
+
+@app_bot.on_callback_query()
+async def handle_callbacks(client, callback_query):
+    if callback_query.data == "close":
+        await callback_query.message.delete()
+    elif callback_query.data == "save":
+        await callback_query.answer("Feature coming in next update!", show_alert=True)
 
 if __name__ == '__main__':
-    # Start the fake server first
     keep_alive()
-    
-    # Start the bot
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    pdf_handler = MessageHandler(filters.Document.PDF, handle_pdf)
-    application.add_handler(pdf_handler)
-    print("Bot is polling...")
-    application.run_polling()
+    print("Super Bot is running...")
+    app_bot.run()
