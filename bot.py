@@ -49,7 +49,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         2. 'Rule of 5' Vocabulary: 5 hard words with definitions and context sentences.
         Output as clean text with emojis.
         """
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash-001')
         response = model.generate_content([prompt, uploaded_file])
         await context.bot.send_message(chat_id=update.effective_chat.id, text=response.text)
 
