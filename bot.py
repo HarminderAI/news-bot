@@ -184,7 +184,7 @@ async def generate_quiz(client, chat_id, message_to_edit):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content(quiz_prompt)
         await message_to_edit.reply_text(f"📝 **TODAY'S QUIZ**\n\n{response.text}", parse_mode=filters.enums.ParseMode.MARKDOWN)
     except Exception as e:
