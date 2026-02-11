@@ -112,6 +112,12 @@ def check_rate_limit(user_id):
         
     return False
 
+def update_session_timestamp(session_key):
+    """Updates the session's last active time and moves it to the end of the LRU cache."""
+    if session_key in USER_DATA_STORE:
+        USER_DATA_STORE[session_key]['timestamp'] = time.time()
+        USER_DATA_STORE.move_to_end(session_key)
+
 def sanitize_sheet_input(text):
     if not text: return ""
     text = str(text)
