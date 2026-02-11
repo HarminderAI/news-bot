@@ -692,17 +692,22 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
     elif action == "ignore": 
         await callback_query.answer("Already saved! 💾", show_alert=True)
 
+# --- MAIN EXECUTION ---
+
 async def main():
     await app_bot.start()
+    # Schedule the background tasks on the active loop
     asyncio.create_task(periodic_gemini_cleanup())
     asyncio.create_task(session_garbage_collector())
-    print("Super Bot (THE ZERO-TRUST CORE) is running...")
+    print("🚀 Super Bot (ONLINE & READY) is running...")
     await idle()
     await app_bot.stop()
 
 if __name__ == '__main__':
     keep_alive()
     try:
-        asyncio.run(main())
+        # Fetch the existing event loop instead of creating a new one
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
     except Exception as e:
         print(f"🔥 Fatal Bot Crash: {e}")
