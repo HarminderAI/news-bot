@@ -538,7 +538,16 @@ async def translate_text(client, chat_id, user_id, message_to_edit):
             if session_key in USER_DATA_STORE: USER_DATA_STORE[session_key]['is_processing'] = False
 
 # --- 9. HANDLERS ---
-
+@app_bot.on_message(filters.command("start"))
+async def handle_start(client, message):
+    welcome_text = (
+        "👋 **Welcome to News Analyst!**\n\n"
+        "I am your AI study companion. Send me any Newspaper or Magazine PDF (up to 20MB), "
+        "and I will help you extract exam-specific reading lists, generate quizzes, and even translate it.\n\n"
+        "📁 **Send a PDF to begin!**"
+    )
+    await message.reply_text(welcome_text)
+    
 @app_bot.on_message(filters.document)
 async def handle_document(client, message):
     if message.document.mime_type == "application/pdf":
