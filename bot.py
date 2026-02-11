@@ -183,7 +183,14 @@ async def session_garbage_collector():
             except Exception:
                 pass
 
-app_bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Bypasses SQLite disk-locks on cloud servers to prevent hanging
+app_bot = Client(
+    "my_bot", 
+    api_id=API_ID, 
+    api_hash=API_HASH, 
+    bot_token=BOT_TOKEN,
+    in_memory=True  # <--- THIS IS THE MAGIC FIX
+)
 
 # --- 5. ADVANCED PROMPTS ---
 
