@@ -1,3 +1,47 @@
-__pycache__/
-*.pdf
+# -----------------------------
+# Secrets & Credentials (CRITICAL)
+# -----------------------------
 .env
+credentials.json
+*.pem
+*.key
+
+# -----------------------------
+# Bot Temporary Files & Media
+# -----------------------------
+downloads/
+*.pdf
+*.mp3
+*.ogg
+
+# -----------------------------
+# Python Virtual Environments
+# -----------------------------
+venv/
+.venv/
+env/
+.env_dir/
+
+# -----------------------------
+# Python Cache & Compiled Files
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# -----------------------------
+# Logs and Databases
+# -----------------------------
+*.log
+*.sqlite3
+*.db
+
+# -----------------------------
+# OS & IDE Specific Files
+# -----------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
